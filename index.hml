@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CatFight 3D</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: 'Segoe UI', sans-serif; background: #000; color: white; }
+        canvas { display: block; }
+
+        /* UI Styling */
+        #ui-layer {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            background: radial-gradient(circle, rgba(20,20,30,0.8) 0%, rgba(0,0,0,0.9) 100%);
+            transition: opacity 0.5s ease;
+            z-index: 10;
+        }
+
+        .menu-card {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            padding: 40px;
+            border-radius: 20px;
+            border: 1px solid rgba(255,255,255,0.2);
+            text-align: center;
+            box-shadow: 0 0 30px rgba(0,0,0,0.5);
+        }
+
+        h1 { font-size: 3rem; margin-bottom: 10px; letter-spacing: 5px; text-transform: uppercase; color: #ff007f; }
+        p { color: #ccc; margin-bottom: 30px; }
+
+        .controls { display: flex; flex-direction: column; gap: 15px; margin-bottom: 30px; }
+        label { font-size: 0.9rem; color: #aaa; text-align: left; }
+        input[type="color"] { width: 100%; height: 40px; border: none; cursor: pointer; background: none; }
+        
+        button {
+            padding: 15px 40px;
+            font-size: 1.2rem;
+            border: none;
+            border-radius: 50px;
+            background: linear-gradient(45deg, #ff007f, #7a00ff);
+            color: white;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            text-transform: uppercase;
+            font-weight: bold;
+        }
+
+        button:hover { transform: scale(1.05); box-shadow: 0 0 20px rgba(255, 0, 127, 0.6); }
+
+        /* HUD */
+        #hud {
+            position: absolute;
+            top: 20px; width: 100%;
+            display: none;
+            justify-content: space-around;
+            pointer-events: none;
+        }
+
+        .hp-bar-container { width: 250px; height: 20px; background: rgba(0,0,0,0.5); border: 2px solid #fff; border-radius: 10px; overflow: hidden; }
+        .hp-fill { height: 100%; width: 100%; transition: width 0.3s ease; }
+        #player-hp { background: #00ff88; }
+        #bot-hp { background: #ff3333; }
+        .label { font-weight: bold; margin-bottom: 5px; text-shadow: 2px 2px 4px #000; }
+
+        #instructions {
+            position: absolute; bottom: 20px; width: 100%; text-align: center;
+            color: rgba(255,255,255,0.5); font-size: 0.8rem; display: none;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div class="menu-card">
+            <h1>CatFight</h1>
+            <p>Erstelle deinen Kämpfer</p>
+            <div class="controls">
+                <label>Fellfarbe wählen:</label>
+                <input type="color" id="catColor" value="#555555">
+            </div>
+            <button onclick="startGame()">Kampf Starten</button>
+        </div>
+    </div>
+
+    <div id="hud">
+        <div>
+            <div class="label">DU (Katze)</div>
+            <div class="hp-bar-container"><div id="player-hp" class="hp-fill"></div></div>
+        </div>
+        <div>
+            <div class="label">BOT (Feind)</div>
+            <div class="hp-bar-container"><div id="bot-hp" class="hp-fill"></div></div>
+        </div>
+    </div>
+
+    <div id="instructions">WASD zum Bewegen | LEERTASTE zum Angreifen</div>
+
+    <script>
+        let scene, camera, renderer, player, bot;
+        let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false;
+        let playerHealth = 100, botHealth = 100;
+        let gameActive = false;
+        let canAttack = true;
+
+        function init() {
+            // Scene & Camera
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x050505);
+            scene.fog = new THREE.Fog(0x050505, 10, 50);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 10, 15);
+            camera.lookAt(0, 0, 0);
+
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+            scene.add(ambientLight);
+
+            const spotLight = new THREE.SpotLight(0xff007f, 1);
+            spotLight.position.set(10, 20, 10);
+            spotLight.castShadow = true;
+            scene.add(spotLight);
+
+            // Floor
+            const floorGeo = new THREE.PlaneGeometry(100, 100);
+            const floorMat = new THREE.MeshPhongMaterial({ color: 0x111111, side: THREE.DoubleSide });
+            const floor = new THREE.Mesh(floorGeo, floorMat);
+            floor.rotation.x = Math.PI / 2;
+            scene.add(floor);
+
+            // Grid Helper for Elegance
+            const grid = new THREE.GridHelper(100, 50, 0xff007f, 0x222222);
+            scene.add(grid);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            document.body.appendChild(renderer.domElement);
+
+            window.addEventListener('resize', onWindowResize, false);
+        }
+
+        function createCat(color) {
+            const group = new THREE.Group();
+
+            // Body
+            const body = new THREE.Mesh(
+                new THREE.BoxGeometry(1, 0.8, 1.5),
+                new THREE.MeshPhongMaterial({ color: color })
+            );
+            body.position.y = 0.6;
+            group.add(body);
+
+            // Head
+            const head = new THREE.Mesh(
+                new THREE.BoxGeometry(0.8, 0.8, 0.8),
+                new THREE.MeshPhongMaterial({ color: color })
+            );
+            head.position.set(0, 1.2, 0.6);
+            group.add(head);
+
+            // Ears
+            const earGeo = new THREE.ConeGeometry(0.2, 0.4, 4);
+            const earMat = new THREE.MeshPhongMaterial({ color: color });
+            const earL = new THREE.Mesh(earGeo, earMat);
+            earL.position.set(0.25, 1.7, 0.6);
+            group.add(earL);
+            const earR = earL.clone();
+            earR.position.x = -0.25;
+            group.add(earR);
+
+            return group;
+        }
+
+        function startGame() {
+            const selectedColor = document.getElementById('catColor').value;
+            
+            player = createCat(selectedColor);
+            player.position.set(-5, 0, 0);
+            scene.add(player);
+
+            bot = createCat(0xff3333); // Rote Bot-Katze
+            bot.position.set(5, 0, 0);
+            scene.add(bot);
+
+            document.getElementById('ui-layer').style.opacity = '0';
+            setTimeout(() => {
+                document.getElementById('ui-layer').style.display = 'none';
+                document.getElementById('hud').style.display = 'flex';
+                document.getElementById('instructions').style.display = 'block';
+                gameActive = true;
+            }, 500);
+
+            animate();
+        }
+
+        // Controls
+        window.addEventListener('keydown', (e) => {
+            if (e.code === 'KeyW') moveForward = true;
+            if (e.code === 'KeyS') moveBackward = true;
+            if (e.code === 'KeyA') moveLeft = true;
+            if (e.code === 'KeyD') moveRight = true;
+            if (e.code === 'Space') attack();
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (e.code === 'KeyW') moveForward = false;
+            if (e.code === 'KeyS') moveBackward = false;
+            if (e.code === 'KeyA') moveLeft = false;
+            if (e.code === 'KeyD') moveRight = false;
+        });
+
+        function attack() {
+            if (!canAttack || !gameActive) return;
+            canAttack = false;
+
+            // Simple Attack Animation (Lunge)
+            const startZ = player.position.z;
+            const startX = player.position.x;
+            
+            // "Jump" forward based on rotation
+            player.translateZ(2);
+            
+            // Check distance to bot
+            const dist = player.position.distanceTo(bot.position);
+            if (dist < 2.5) {
+                botHealth -= 15;
+                updateHUD();
+            }
+
+            setTimeout(() => {
+                player.position.x = startX;
+                player.position.z = startZ;
+                canAttack = true;
+            }, 200);
+        }
+
+        function updateHUD() {
+            document.getElementById('player-hp').style.width = playerHealth + '%';
+            document.getElementById('bot-hp').style.width = botHealth + '%';
+
+            if (botHealth <= 0) {
+                alert("Sieg! Die andere Katze hat aufgegeben.");
+                location.reload();
+            }
+            if (playerHealth <= 0) {
+                alert("Niederlage! Der Bot war schneller.");
+                location.reload();
+            }
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            if (!gameActive) return;
+            requestAnimationFrame(animate);
+
+            // Player Movement
+            if (moveForward) player.translateZ(0.1);
+            if (moveBackward) player.translateZ(-0.1);
+            if (moveLeft) player.rotation.y += 0.05;
+            if (moveRight) player.rotation.y -= 0.05;
+
+            // Simple Bot AI (Follows player)
+            const speed = 0.03;
+            if (bot.position.x < player.position.x) bot.position.x += speed;
+            if (bot.position.x > player.position.x) bot.position.x -= speed;
+            if (bot.position.z < player.position.z) bot.position.z += speed;
+            if (bot.position.z > player.position.z) bot.position.z -= speed;
+            bot.lookAt(player.position);
+
+            // Bot Attack logic (if close enough)
+            if (bot.position.distanceTo(player.position) < 1.5 && Math.random() < 0.02) {
+                playerHealth -= 1;
+                updateHUD();
+            }
+
+            // Camera follow
+            camera.position.lerp(new THREE.Vector3(player.position.x, player.position.y + 5, player.position.z + 10), 0.1);
+            camera.lookAt(player.position);
+
+            renderer.render(scene, camera);
+        }
+
+        init();
+    </script>
+</body>
+</html>
